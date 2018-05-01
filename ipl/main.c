@@ -443,11 +443,11 @@ int dump_emmc_part(char *sd_path, sdmmc_storage_t *storage, emmc_part_t *part)
 			bytesWritten = 0;
 		}
 
-		u32 retryCount=0;
+		int retryCount=0;
 		u32 num = MIN(totalSectors, NUM_SECTORS_PER_ITER);
 		while(!sdmmc_storage_read(storage, lba_curr, num, buf))
 		{
-			gfx_printf(&gfx_con, "%kError reading %d blocks @ LBA %08X (try %u) %k\n",
+			gfx_printf(&gfx_con, "%kError reading %d blocks @ LBA %08X (try %d) %k\n",
 				0xFF0000FF, num, lba_curr, ++retryCount, 0xFFFFFFFF);
 
 			sleep(500000);
