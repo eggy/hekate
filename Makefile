@@ -63,7 +63,9 @@ $(BUILD)/$(TARGET).elf: $(OBJS)
 	$(CC) $(LDFLAGS) -T ipl/link.ld $^ -o $@
 
 $(BUILD)/%.o: $(SOURCEDIR)/%.c
+	@mkdir -p "$(@D)"
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(BUILD)/%.o: $(SOURCEDIR)/%.S
+	@mkdir -p "$(@D)"
 	$(CC) $(CFLAGS) -c $< -o $@
