@@ -171,6 +171,10 @@ void config_se_brom()
 	SE(SE_INT_STATUS_REG_OFFSET) = 0x1F;
 	//Lock SSK (although it's not set and unused anyways).
 	SE(SE_KEY_TABLE_ACCESS_REG_OFFSET + 15 * 4) = 0x7E;
+	// Clear the boot reason to avoid problems later
+	PMC(APBDEV_PMC_SCRATCH200) = 0x0;
+	PMC(APBDEV_PMC_RST_STATUS_0) = 0x0;
+	PMC(APBDEV_PMC_SCRATCH49_0) = 0x0;
 }
 
 void config_hw()
@@ -382,43 +386,118 @@ void *sd_file_read(char *path)
 
 int dump_emmc_part(char *sd_path, sdmmc_storage_t *storage, emmc_part_t *part)
 {
-	static u32 FAT32_FILESIZE_LIMIT = 0xFFFFFFFF;
-	static u32 MULTIPART_SPLIT_SIZE = (1u << 31);
+	static const u32 FAT32_FILESIZE_LIMIT = 0xFFFFFFFF;
+	static const u32 MULTIPART_SPLIT_SIZE = (1u << 31);
+	static const u32 SECTORS_TO_MB_COEFF  = 0x800;
 
 	u32 totalSectors = part->lba_end - part->lba_start + 1;
+	u32 currPartIdx = 0;
+	u32 numSplitParts = 0;
+	u32 maxSplitParts = 0;
+	int isSmallSdCard = 0;
+	int partialDumpInProgress = 0;
+	int res = 0;
+	int ignoreWriteErrors = 0;
 	char* outFilename = sd_path;
 	u32 sdPathLen = strlen(sd_path);
-	u32 numSplitParts = 0;
-	if ((sd_fs.fs_type != FS_EXFAT) && totalSectors > (FAT32_FILESIZE_LIMIT/NX_EMMC_BLOCKSIZE))
+
+	FIL partialIdxFp;
+	char partialIdxFilename[12];
+	memcpy(partialIdxFilename, "partial.idx", 11);
+	partialIdxFilename[11] = 0;
+
+	gfx_printf(&gfx_con, "SD Card free space: %dMB, Total dump size %dMB\n",
+		sd_fs.free_clst * sd_fs.csize / SECTORS_TO_MB_COEFF,
+		totalSectors / SECTORS_TO_MB_COEFF);
+
+	// Check if the USER partition or the RAW eMMC fits the sd card free space
+	if (totalSectors > (sd_fs.free_clst * sd_fs.csize))
 	{
-		const u32 MULTIPART_SPLIT_SECTORS = MULTIPART_SPLIT_SIZE/NX_EMMC_BLOCKSIZE;
+		isSmallSdCard = 1;
+
+		gfx_printf(&gfx_con, "%kSD card free space is smaller than dump total size.%k\n", 0xFF00BAFF, 0xFFFFFFFF);
+
+		maxSplitParts = (sd_fs.free_clst * sd_fs.csize) / (MULTIPART_SPLIT_SIZE / 512);
+
+		if (!maxSplitParts)
+		{
+			gfx_printf(&gfx_con, "%kNot enough free space for partial dumping.%k\n", 0xFF0000FF, 0xFFFFFFFF);
+
+			return 0;
+		}
+	}
+	// Check if we continueing a previous raw eMMC dump in progress.
+	if (isSmallSdCard)
+	{
+		if (f_open(&partialIdxFp, partialIdxFilename, FA_READ) == FR_OK)
+		{
+			gfx_printf(&gfx_con, "%kFound partial dump in progress. Continuing...%k\n", 0xFF14FDAE, 0xFFFFFFFF);
+
+			partialDumpInProgress = 1;
+
+			f_read(&partialIdxFp, &currPartIdx, 4, NULL);
+			f_close(&partialIdxFp);
+
+			// Increase maxSplitParts to accommodate previously dumped parts 
+			maxSplitParts += currPartIdx;
+		}
+		else
+			gfx_printf(&gfx_con, "%kContinuing with partial dumping...%k\n", 0xFF00BAFF, 0xFFFFFFFF);
+	}
+
+	// Check if filesystem is FAT32 or the free space is smaller and dump in parts
+	if (((sd_fs.fs_type != FS_EXFAT) || isSmallSdCard) && totalSectors > (FAT32_FILESIZE_LIMIT/NX_EMMC_BLOCKSIZE))
+	{
+		static const u32 MULTIPART_SPLIT_SECTORS = MULTIPART_SPLIT_SIZE/NX_EMMC_BLOCKSIZE;
 		numSplitParts = (totalSectors+MULTIPART_SPLIT_SECTORS-1)/MULTIPART_SPLIT_SECTORS;
 
 		outFilename = alloca(sdPathLen+4);
 		memcpy(outFilename, sd_path, sdPathLen);
 		outFilename[sdPathLen++] = '.';
 
-		outFilename[sdPathLen] = '0';
-		if (numSplitParts >= 10)
+		if (!partialDumpInProgress)
 		{
-			outFilename[sdPathLen+1] = '0';
-			outFilename[sdPathLen+2] = 0;
+			outFilename[sdPathLen] = '0';
+			if (numSplitParts >= 10)
+			{
+				outFilename[sdPathLen+1] = '0';
+				outFilename[sdPathLen+2] = 0;
+			}
+			else
+				outFilename[sdPathLen+1] = 0;
 		}
+		// Continue from where we left, if partial dump in proggress.
 		else
-			outFilename[sdPathLen+1] = 0;
+		{
+			if (numSplitParts >= 10 && currPartIdx < 10)
+			{
+				outFilename[sdPathLen] = '0';
+				itoa(currPartIdx, &outFilename[sdPathLen+1], 10);
+			}
+			else
+				itoa(currPartIdx, &outFilename[sdPathLen], 10);
+		}
 	}
 
 	FIL fp;
 	if (f_open(&fp, outFilename, FA_CREATE_ALWAYS | FA_WRITE) != FR_OK)
 		return 0;
 
-	static u32 NUM_SECTORS_PER_ITER = 512;
+	static const u32 NUM_SECTORS_PER_ITER = 512;
 	u8 *buf = (u8 *)malloc(NX_EMMC_BLOCKSIZE * NUM_SECTORS_PER_ITER);
 
 	u32 lba_curr = part->lba_start;
 	u32 bytesWritten = 0;
-	u32 currPartIdx = 0;
-	u32 prevPct=200;
+	u32 prevPct = 200;
+	int retryCount = 0;
+
+	// Continue from where we left, if partial dump in proggress.
+	if (partialDumpInProgress)
+	{
+		lba_curr += currPartIdx * (MULTIPART_SPLIT_SIZE / NX_EMMC_BLOCKSIZE);
+		totalSectors -= currPartIdx * (MULTIPART_SPLIT_SIZE / NX_EMMC_BLOCKSIZE);
+	}
+
 	while(totalSectors > 0)
 	{
 		if (numSplitParts != 0 && bytesWritten >= MULTIPART_SPLIT_SIZE)
@@ -435,6 +514,40 @@ int dump_emmc_part(char *sd_path, sdmmc_storage_t *storage, emmc_part_t *part)
 			else
 				itoa(currPartIdx, &outFilename[sdPathLen], 10);
 
+			// More parts to dump that do not currently fit the sd card free space
+			if ((isSmallSdCard && currPartIdx >= maxSplitParts) || (res && !ignoreWriteErrors))
+			{
+				// Create partial dump index file
+				if (f_open(&partialIdxFp, partialIdxFilename, FA_CREATE_ALWAYS | FA_WRITE) == FR_OK)
+				{
+					f_write(&partialIdxFp, &currPartIdx, 4, NULL);
+					f_close(&partialIdxFp);
+				}
+				else
+				{
+					gfx_printf(&gfx_con, "%k\nError creating partial.idx file.%k\n", 0xFF0000FF, 0xFFFFFFFF);
+
+					free(buf);
+					return 0;
+				}
+				if (res && !ignoreWriteErrors)
+				{
+					gfx_printf(&gfx_con, "%k\nPress any key and try again.%k\n",
+						0xFF0000FF, 0xFFFFFFFF);
+
+					free(buf);
+					return 0;
+				}
+				gfx_puts(&gfx_con, "\n1. Press any key and Power off Switch from the main menu.\n\
+					2. Move the files from SD card to free space.\n   \
+					Don\'t move the partial.idx file!\n\
+					3. Unplug and re-plug USB while pressing Vol+.\n\
+					4. Run hekate - ipl again and press Dump RAW eMMC or eMMC USER to continue");
+
+				free(buf);
+				return 1;
+			}
+
 			if (f_open(&fp, outFilename, FA_CREATE_ALWAYS | FA_WRITE) != FR_OK)
 			{
 				free(buf);
@@ -443,18 +556,35 @@ int dump_emmc_part(char *sd_path, sdmmc_storage_t *storage, emmc_part_t *part)
 			bytesWritten = 0;
 		}
 
-		int retryCount=0;
+		retryCount = 0;
 		u32 num = MIN(totalSectors, NUM_SECTORS_PER_ITER);
 		while(!sdmmc_storage_read(storage, lba_curr, num, buf))
 		{
-			gfx_printf(&gfx_con, "%kError reading %d blocks @ LBA %08X (try %d) %k\n",
+			gfx_printf(&gfx_con, "%kError reading %d blocks @ LBA %08X from eMMC (try %d)%k\n",
 				0xFF0000FF, num, lba_curr, ++retryCount, 0xFFFFFFFF);
 
 			sleep(500000);
-			if (retryCount >= 3)	
+			if (retryCount >= 10)	
 				goto out;
 		}
-		f_write(&fp, buf, NX_EMMC_BLOCKSIZE * num, NULL);
+		res = f_write(&fp, buf, NX_EMMC_BLOCKSIZE * num, NULL);
+		if (res && !ignoreWriteErrors)
+		{
+			gfx_printf(&gfx_con, "%kFatal error %d when writing to SD Card%k\n\
+				Press VOL to abort and try again\nPress POWER to ignore errors (will produce a corrupt dump)",
+				0xFF0000FF, res, 0xFFFFFFFF);
+			u32 btn = btn_wait();
+
+			if (btn & BTN_POWER)
+			{
+				bytesWritten = MULTIPART_SPLIT_SIZE - num * NX_EMMC_BLOCKSIZE;
+				currPartIdx--;
+			}
+			else
+			{
+				ignoreWriteErrors = 1;
+			}
+		}
 		u32 pct = (u64)((u64)(lba_curr - part->lba_start) * 100u) / (u64)(part->lba_end - part->lba_start);
 		if (pct != prevPct)
 		{
@@ -478,6 +608,13 @@ int dump_emmc_part(char *sd_path, sdmmc_storage_t *storage, emmc_part_t *part)
 out:;
 	free(buf);
 	f_close(&fp);
+	// Partial dump done. Remove partial dump index file.
+	if(partialDumpInProgress)
+	{
+		f_unlink(partialIdxFilename);
+		gfx_printf(&gfx_con, "\n\nYou can now join the files and get the complete raw eMMC dump.\n");
+	}
+
 	return 1;
 }
 
@@ -499,6 +636,12 @@ static void dump_emmc_selected(dumpType_t dumpType)
 		gfx_printf(&gfx_con, "%kFailed to mount SD card (make sure that it is inserted).%k\n", 0xFF0000FF, 0xFFFFFFFF);
 		goto out;
 	}
+	else
+	{
+		gfx_puts(&gfx_con, "Checking for available free space...\n");
+		// Get SD Card free space for partial dumping
+		f_getfree("", &sd_fs.free_clst, NULL);
+	}
 
 	sdmmc_storage_t storage;
 	sdmmc_t sdmmc;
@@ -511,7 +654,7 @@ static void dump_emmc_selected(dumpType_t dumpType)
 	int i = 0;
 	if (dumpType & DUMP_BOOT)
 	{	
-		static u32 BOOT_PART_SIZE = 0x400000;
+		static const u32 BOOT_PART_SIZE = 0x400000;
 
 		emmc_part_t bootPart;
 		memset(&bootPart, 0, sizeof(bootPart));
@@ -523,8 +666,8 @@ static void dump_emmc_selected(dumpType_t dumpType)
 			bootPart.name[4] = (u8)('0' + i);
 			bootPart.name[5] = 0;
 
-			gfx_printf(&gfx_con, "%02d: %s (%08X-%08X)\n", i,
-				bootPart.name, bootPart.lba_start, bootPart.lba_end);
+			gfx_printf(&gfx_con, "%k%02d: %s (%08X-%08X)%k\n", 0xFFFFDD00, i,
+				bootPart.name, bootPart.lba_start, bootPart.lba_end, 0xFFFFFFFF);
 
 			sdmmc_storage_set_mmc_partition(&storage, i+1);
 			dump_emmc_part(bootPart.name, &storage, &bootPart);
@@ -547,8 +690,8 @@ static void dump_emmc_selected(dumpType_t dumpType)
 				if ((dumpType & DUMP_SYSTEM) == 0 && strcmp(part->name, "USER"))
 					continue;
 
-				gfx_printf(&gfx_con, "%02d: %s (%08X-%08X)\n", i++,
-					part->name, part->lba_start, part->lba_end);
+				gfx_printf(&gfx_con, "%k%02d: %s (%08X-%08X)%k\n", 0xFFFFDD00, i++,
+					part->name, part->lba_start, part->lba_end, 0xFFFFFFFF);
 
 				dump_emmc_part(part->name, &storage, part);
 				gfx_putc(&gfx_con, '\n');
@@ -557,16 +700,16 @@ static void dump_emmc_selected(dumpType_t dumpType)
 		
 		if (dumpType & DUMP_RAW)
 		{
-			static u64 RAW_AREA_NUM_SECTORS = 0x3A3E000;
+			static const u32 RAW_AREA_NUM_SECTORS = 0x3A3E000;
 
 			emmc_part_t rawPart;
 			memset(&rawPart, 0, sizeof(rawPart));
 			rawPart.lba_start = 0;
 			rawPart.lba_end = RAW_AREA_NUM_SECTORS-1;
-			strcpy(rawPart.name, "RawNand.bin");
+			strcpy(rawPart.name, "rawnand.bin");
 			{
-				gfx_printf(&gfx_con, "%02d: %s (%08X-%08X)\n", i++,
-					rawPart.name, rawPart.lba_start, rawPart.lba_end);
+				gfx_printf(&gfx_con, "%k%02d: %s (%08X-%08X)%k\n", 0xFFFFDD00, i++,
+					rawPart.name, rawPart.lba_start, rawPart.lba_end, 0xFFFFFFFF);
 
 				dump_emmc_part(rawPart.name, &storage, &rawPart);
 				gfx_putc(&gfx_con, '\n');
@@ -575,7 +718,7 @@ static void dump_emmc_selected(dumpType_t dumpType)
 	}
 
 	sdmmc_storage_end(&storage);
-	gfx_puts(&gfx_con, "Done.\n");
+	gfx_puts(&gfx_con, "Done. Press any key.\n");
 
 out:;
 	sleep(100000);
@@ -698,7 +841,7 @@ menu_t menu_cinfo = {
 
 ment_t ment_tools[] = {
 	MDEF_BACK(),
-	MDEF_HANDLER("Dump eMMC RawNand", dump_emmc_rawnand),
+	MDEF_HANDLER("Dump RAW eMMC", dump_emmc_rawnand),
 	MDEF_HANDLER("Dump eMMC SYS", dump_emmc_system),
 	MDEF_HANDLER("Dump eMMC USER", dump_emmc_user),
 	MDEF_HANDLER("Dump eMMC BOOT", dump_emmc_boot),
