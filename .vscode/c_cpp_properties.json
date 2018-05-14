@@ -3,17 +3,23 @@
         {
             "name": "ARM",
             "intelliSenseMode": "clang-x64",
-            "includePath": [ "${workspaceFolder}/ipl" ],
+            "includePath": [
+                "${workspaceFolder}/ipl"
+            ],
             "defines": [],
             "compilerPath": "\"${DEVKITARM}/bin/arm-none-eabi-gcc${EXECUTABLE_SUFFIX}\" -march=armv4t -mtune=arm7tdmi -mthumb -mthumb-interwork",
             "cStandard": "c11",
             "cppStandard": "c++17",
             "browse": {
-                "path": [ "${DEVKITARM}/arm-none-eabi/include", "${DEVKITARM}/lib/gcc/arm-none-eabi/7.1.0/include", "${workspaceFolder}/ipl" ],
+                "path": [
+                    "${DEVKITARM}/arm-none-eabi/include",
+                    "${DEVKITARM}/lib/gcc/arm-none-eabi/7.1.0/include",
+                    "${workspaceFolder}/ipl"
+                ],
                 "limitSymbolsToIncludedHeaders": true,
                 "databaseFilename": ""
             }
         }
     ],
-    "version": 3
+    "version": 4
 }

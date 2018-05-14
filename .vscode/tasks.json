@@ -24,7 +24,7 @@
         {
             "label": "launch",
             "type": "shell",
-            "command": "${env:FUSEE_LAUNCHER} \"${workspaceFolder}/build_ipl/ipl\"",
+            "command": "${env:FUSEE_LAUNCHER} \"${workspaceFolder}/ipl.bin\"",
             "dependsOn": [
 				"compile"
             ],
