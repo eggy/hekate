@@ -516,7 +516,7 @@ void print_mmc_info()
 				boot_size / 1024, boot_size / 1024 / 512);
 			gfx_printf(&gfx_con, " 3: %kRPMB       %kSize: %5d KiB (LBA Sectors: 0x%07X)\n", 0xFF00FF96, 0xFFCCCCCC,
 				rpmb_size / 1024, rpmb_size / 1024 / 512);
-			gfx_printf(&gfx_con, " 0: %kGPP (USER) %kSize: %05d MiB (LBA Sectors: 0x%07X)\n\n", 0xFF00FF96, 0xFFCCCCCC,
+			gfx_printf(&gfx_con, " 0: %kGPP (USER) %kSize: %5d MiB (LBA Sectors: 0x%07X)\n\n", 0xFF00FF96, 0xFFCCCCCC,
 				storage.sec_cnt >> SECTORS_TO_MIB_COEFF, storage.sec_cnt);
 			gfx_printf(&gfx_con, "%kGPP (eMMC USER) partition table:%k\n", 0xFFFFDD00, 0xFFCCCCCC);
 
@@ -658,6 +658,81 @@ void power_off()
 	i2c_send_byte(I2C_5, 0x3C, MAX77620_REG_ONOFFCNFG1, MAX77620_ONOFFCNFG1_PWR_OFF);
 }
 
+int dump_emmc_verify(sdmmc_storage_t *storage, u32 lba_curr, char* outFilename, u32 NUM_SECTORS_PER_ITER, emmc_part_t *part)
+{
+	FIL fp;
+	u32 prevPct = 200;
+
+	if (f_open(&fp, outFilename, FA_READ) == FR_OK)
+	{
+		u8 *bufEm = (u8 *)malloc(NX_EMMC_BLOCKSIZE * NUM_SECTORS_PER_ITER);
+		u8 *bufSd = (u8 *)malloc(NX_EMMC_BLOCKSIZE * NUM_SECTORS_PER_ITER);
+
+		u32 totalSectorsVer = (u32)(f_size(&fp) >> 9);
+		u32 lbaCurrVer = lba_curr - totalSectorsVer;
+
+		u32 pct = (u64)((u64)(lbaCurrVer - part->lba_start) * 100u) / (u64)(part->lba_end - part->lba_start);
+		tui_pbar(&gfx_con, 0, gfx_con.y, pct, 0xFF00FF96, 0xFF005515);
+
+		while (totalSectorsVer > 0)
+		{
+			u32 num = MIN(totalSectorsVer, NUM_SECTORS_PER_ITER);
+
+			if(!sdmmc_storage_read(storage, lbaCurrVer, num, bufEm))
+			{
+				EPRINTFARGS("\nFailed to read %d blocks @ LBA %08X\nfrom eMMC. Aborting..\n",
+				num, lbaCurrVer);
+
+				free(bufEm);
+				free(bufSd);
+				f_close(&fp);
+				return 1;
+			}
+			if (!(f_read(&fp, bufSd, num, NULL) == FR_OK))
+			{
+				EPRINTFARGS("\nFailed to read %d blocks from sd card.\nVerification failed..\n", num);
+
+				free(bufEm);
+				free(bufSd);
+				f_close(&fp);
+				return 1;
+			}
+
+			if(!memcmp(bufEm, bufSd, num << 9))
+			{
+				EPRINTFARGS("\nVerification failed.\nVerification failed..\n", num);
+
+				free(bufEm);
+				free(bufSd);
+				f_close(&fp);
+				return 1;
+			}
+
+			pct = (u64)((u64)(lbaCurrVer - part->lba_start) * 100u) / (u64)(part->lba_end - part->lba_start);
+			if (pct != prevPct)
+			{
+				tui_pbar(&gfx_con, 0, gfx_con.y, pct, 0xFF00FF96, 0xFF005515);
+				prevPct = pct;
+			}
+
+			lbaCurrVer += num;
+			totalSectorsVer -= num;
+		}
+		free(bufEm);
+		free(bufSd);
+		f_close(&fp);
+
+		tui_pbar(&gfx_con, 0, gfx_con.y, pct, 0xFFCCCCCC, 0xFF555555);
+
+		return 0;
+	}
+	else
+	{
+		EPRINTF("\nFile not found or could not be loaded.\nVerification failed..\n");
+		return 1;
+	}
+}
+
 int dump_emmc_part(char *sd_path, sdmmc_storage_t *storage, emmc_part_t *part)
 {
 	static const u32 FAT32_FILESIZE_LIMIT = 0xFFFFFFFF;
@@ -793,6 +868,15 @@ int dump_emmc_part(char *sd_path, sdmmc_storage_t *storage, emmc_part_t *part)
 			memset(&fp, 0, sizeof(fp));
 			currPartIdx++;
 
+			// Verify part
+			if (dump_emmc_verify(storage, lba_curr, outFilename, NUM_SECTORS_PER_ITER, part))
+			{
+				EPRINTF("\nPress any key and try again.\n");
+
+				free(buf);
+				return 0;
+			}
+
 			if (numSplitParts >= 10 && currPartIdx < 10)
 			{
 				outFilename[sdPathLen] = '0';
@@ -875,7 +959,7 @@ int dump_emmc_part(char *sd_path, sdmmc_storage_t *storage, emmc_part_t *part)
 		u32 pct = (u64)((u64)(lba_curr - part->lba_start) * 100u) / (u64)(part->lba_end - part->lba_start);
 		if (pct != prevPct)
 		{
-			tui_pbar(&gfx_con, 0, gfx_con.y, pct);
+			tui_pbar(&gfx_con, 0, gfx_con.y, pct, 0xFFCCCCCC, 0xFF555555);
 			prevPct = pct;
 		}
 
@@ -890,16 +974,28 @@ int dump_emmc_part(char *sd_path, sdmmc_storage_t *storage, emmc_part_t *part)
 			bytesWritten = 0;
 		}
 	}
-	tui_pbar(&gfx_con, 0, gfx_con.y, 100);
+	tui_pbar(&gfx_con, 0, gfx_con.y, 100, 0xFFCCCCCC, 0xFF555555);
 
-out:;
+	// Dumping process ended successfully
 	free(buf);
 	f_close(&fp);
+
+	// Verify last part or single file dump
+	if (dump_emmc_verify(storage, lba_curr, outFilename, NUM_SECTORS_PER_ITER, part))
+	{
+		EPRINTF("\nPress any key and try again.\n");
+
+		free(buf);
+		return 0;
+	}
+	else
+		tui_pbar(&gfx_con, 0, gfx_con.y, 100, 0xFF00FF96, 0xFF005515);
+
 	// Remove partial dump index file if no fatal errors occurred.
 	if(isSmallSdCard)
 	{
 		f_unlink(partialIdxFilename);
-		gfx_printf(&gfx_con, "\n\nYou can now join the files and get the complete raw eMMC dump.");
+		gfx_printf(&gfx_con, "%k\n\nYou can now join the files\nand get the complete raw eMMC dump.", 0xFFCCCCCC);
 	}
 	gfx_puts(&gfx_con, "\n\n");
 
@@ -1001,10 +1097,10 @@ static void dump_emmc_selected(dumpType_t dumpType)
 	}
 
 	gfx_putc(&gfx_con, '\n');
-	gfx_printf(&gfx_con, "%kTime taken: %d seconds.%k\n", 0xFF00FF96, (get_tmr() - timer) / 1000000, 0xFFCCCCCC);
+	gfx_printf(&gfx_con, "Time taken: %d seconds.\n", (get_tmr() - timer) / 1000000);
 	sdmmc_storage_end(&storage);
 	if (res)
-		gfx_puts(&gfx_con, "\nDone. Press any key.\n");
+		gfx_printf(&gfx_con, "\n%kFinished and verified!%k\nPress any key.\n",0xFF00FF96, 0xFFCCCCCC);
 
 out:;
 	btn_wait();
@@ -1187,12 +1283,12 @@ out:;
 void about()
 {
 	static const char octopus[] =
-	"hekate (c) 2018 naehrwert, st4rk\n\n"
+	"hekate (C) 2018 naehrwert, st4rk\n\n"
 	"Thanks to: %kderrek, nedwill, plutoo, shuffle2, smea, thexyz, yellows8%k\n\n"
 	"Greetings to: fincs, hexkyz, SciresM, Shiny Quagsire, WinterMute\n\n"
 	"Open source and free packages used:\n"
-	" - FatFs R0.13a (Copyright (C) 2017, ChaN)\n"
-	" - bcl-1.2.0 (Copyright (c) 2003-2006 Marcus Geelnard)\n\n"
+	" - FatFs R0.13a, (Copyright (C) 2017, ChaN)\n"
+	" - bcl-1.2.0,    (Copyright (C) 2003-2006, Marcus Geelnard)\n\n"
 	"                         %k___\n"
 	"                      .-'   `'.\n"
 	"                     /         \\\n"
