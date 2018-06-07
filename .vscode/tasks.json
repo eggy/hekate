@@ -24,7 +24,7 @@
         {
             "label": "launch",
             "type": "shell",
-            "command": "${env:FUSEE_LAUNCHER} \"${workspaceFolder}/ipl.bin\"",
+            "command": "${env:FUSEE_LAUNCHER} \"${workspaceFolder}/hekate_ipl.bin\"",
             "dependsOn": [
 				"compile"
             ],

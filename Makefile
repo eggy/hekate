@@ -6,7 +6,7 @@ CC = $(DEVKITARM)/bin/arm-none-eabi-gcc
 LD = $(DEVKITARM)/bin/arm-none-eabi-ld
 OBJCOPY = $(DEVKITARM)/bin/arm-none-eabi-objcopy
 
-TARGET := ipl
+TARGET := hekate_ipl
 BUILD := build_ipl
 SOURCEDIR := ipl
 OBJS = $(addprefix $(BUILD)/, \
