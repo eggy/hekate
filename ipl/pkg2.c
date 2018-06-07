@@ -25,38 +25,49 @@ extern gfx_con_t gfx_con;
 #define DPRINTF(...) gfx_printf(&gfx_con, __VA_ARGS__)*/
 #define DPRINTF(...)
 
+#define U32_PATCH(x) (const u8*)&x, sizeof(x)
 #define _MOVZX(r, i, s) 0xD2800000 | (((s) & 0x30) << 17) | (((i) & 0xFFFF) << 5) | ((r) & 0x1F)
 #define _NOP() 0xD503201F
 
+static const u32 NOP_INSTR = _NOP();
+static const u32 MOVZX_8_1_0_INSTR = _MOVZX(8, 1, 0);
+
+#define BYTES_PATCH(x) x, (sizeof(x)-1)
+
 // Include kernel patches here, so we can utilize pkg1 id
-PATCHSET_DEF(_kernel_1_patchset,
-	{ 0x3764C, _NOP() },         // Disable SVC verifications
-	{ 0x44074, _MOVZX(8, 1, 0) } // Enable Debug Patch
+KPATCHSET_DEF(_kernel_1_patchset,
+	{ 0x3764C, U32_PATCH(NOP_INSTR) },         // Disable SVC verifications
+	{ 0x44074, U32_PATCH(MOVZX_8_1_0_INSTR) }, // Enable Debug Patch
+	{ 0x03AD4, BYTES_PATCH("\x8c\x0a\x90\xf2") }, // Use UART-B instead of UART-A for debugging
+	// kernel printk wrapper function
+	{ 0x4797C, BYTES_PATCH("%.*s") },
+	{ 0x47984, BYTES_PATCH("\xE2\x03\x00\xAA\xE0\xFF\xFF\xD2\xE0\xFF\xDF\xF2\x80\xF8\xB7\xF2\x80\x2F\x8B\xF2\xFD\x7B\xBF\xA9\x86\xF0\xFE\x97\x00\x00\x80\xD2\xFD\x7B\xC1\xA8\xC0\x03\x5F\xD6") },
+	{ 0x2AD64, BYTES_PATCH("\x08\x73\x00\x94") } // Call the wrapper function in svcOutputDebugString
 );
 
-PATCHSET_DEF(_kernel_2_patchset,
-	{ 0x54834, _NOP() },         // Disable SVC verifications
-	{ 0x6086C, _MOVZX(8, 1, 0) } // Enable Debug Patch
+KPATCHSET_DEF(_kernel_2_patchset,
+	{ 0x54834, U32_PATCH(NOP_INSTR) },         // Disable SVC verifications
+	{ 0x6086C, U32_PATCH(MOVZX_8_1_0_INSTR) }  // Enable Debug Patch
 );
 
-PATCHSET_DEF(_kernel_3_patchset,
-	{ 0x3BD24, _NOP() },         // Disable SVC verifications
-	{ 0x483FC, _MOVZX(8, 1, 0) } // Enable Debug Patch
+KPATCHSET_DEF(_kernel_3_patchset,
+	{ 0x3BD24, U32_PATCH(NOP_INSTR) },         // Disable SVC verifications
+	{ 0x483FC, U32_PATCH(MOVZX_8_1_0_INSTR) }  // Enable Debug Patch
 );
 
-PATCHSET_DEF(_kernel_302_patchset,
-	{ 0x3BD24, _NOP() },         // Disable SVC verifications
-	{ 0x48414, _MOVZX(8, 1, 0) } // Enable Debug Patch
+KPATCHSET_DEF(_kernel_302_patchset,
+	{ 0x3BD24, U32_PATCH(NOP_INSTR) },         // Disable SVC verifications
+	{ 0x48414, U32_PATCH(MOVZX_8_1_0_INSTR) }  // Enable Debug Patch
 );
 
-PATCHSET_DEF(_kernel_4_patchset,
-	{ 0x41EB4, _NOP() },         // Disable SVC verifications
-	{ 0x4EBFC, _MOVZX(8, 1, 0) } // Enable Debug Patch
+KPATCHSET_DEF(_kernel_4_patchset,
+	{ 0x41EB4, U32_PATCH(NOP_INSTR) },         // Disable SVC verifications
+	{ 0x4EBFC, U32_PATCH(MOVZX_8_1_0_INSTR) }  // Enable Debug Patch
 );
 
-PATCHSET_DEF(_kernel_5_patchset,
-	{ 0x45E6C, _NOP() },         // Disable SVC verifications
-	{ 0x5513C, _MOVZX(8, 1, 0) } // Enable Debug Patch
+KPATCHSET_DEF(_kernel_5_patchset,
+	{ 0x45E6C, U32_PATCH(NOP_INSTR) },         // Disable SVC verifications
+	{ 0x5513C, U32_PATCH(MOVZX_8_1_0_INSTR) }  // Enable Debug Patch
 );
 
 static const pkg2_kernel_id_t _pkg2_kernel_ids[] = {

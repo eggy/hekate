@@ -30,6 +30,8 @@
 #include "util.h"
 #include "pkg1.h"
 #include "pkg2.h"
+#include "uart.h"
+#include "clock.h"
 #include "ff.h"
 
 #include "gfx.h"
@@ -209,6 +211,7 @@ typedef struct _launch_ctxt_t
 
 	u8 *svcperm;
 	u8 *debugmode;
+	u8 *uartdebug;
 } launch_ctxt_t;
 
 typedef struct _merge_kip_t
@@ -360,6 +363,20 @@ static int _config_debugmode(launch_ctxt_t *ctxt, const char *value)
 	}
 }
 
+static int _config_uartdebug(launch_ctxt_t *ctxt, const char *value)
+{
+	char val = *value;
+	if (val >= 'a' && val <= 'z')
+		val -= 0x20; //toupper
+
+	if (val == 'A' || val == 'B')
+	{
+		DPRINTF("svcOutputDebugString will be output on UART-%c\n", val);
+		ctxt->uartdebug = malloc(1);
+		ctxt->uartdebug[0] = val;
+	}
+}
+
 typedef struct _cfg_handler_t
 {
 	const char *key;
@@ -373,6 +390,7 @@ static const cfg_handler_t _config_handlers[] = {
 	{ "kip1", _config_kip1 },
 	{ "fullsvcperm", _config_svcperm },
 	{ "debugmode", _config_debugmode },
+	{ "uartdebug", _config_uartdebug },
 	{ NULL, NULL },
 };
 
@@ -459,21 +477,47 @@ int hos_launch(ini_sec_t *cfg)
 				ctxt.kernel = pkg2_hdr->data;
 				ctxt.kernel_size = pkg2_hdr->sec_size[PKG2_SEC_KERNEL];
 
-				if (ctxt.svcperm || ctxt.debugmode)
+				if (ctxt.svcperm || ctxt.debugmode || ctxt.uartdebug)
 				{
 					u32 kernel_crc32 = crc32c((u8 *)ctxt.kernel, ctxt.kernel_size);
 					ctxt.pkg2_kernel_id = pkg2_identify(kernel_crc32);
 
-					//In case a kernel patch option is set. Allows to disable Svc Verififcation or/and enable Debug mode
-					patch_t *kernel_patchset = ctxt.pkg2_kernel_id->kernel_patchset;
+					//In case a kernel patch option is set. Allows to disable Svc Verification or/and enable Debug mode
+					kpatch_t *kernel_patchset = ctxt.pkg2_kernel_id->kernel_patchset;
 
 					if (kernel_patchset != NULL)
 					{
 						gfx_printf(&gfx_con, "%kPatching kernel%k\n", 0xFF00BAFF, 0xFFCCCCCC);
-						if (ctxt.svcperm && kernel_patchset[0].off != 0xFFFFFFFF)
-							*(vu32 *)(ctxt.kernel + kernel_patchset[0].off) = kernel_patchset[0].val;
-						if (ctxt.debugmode && kernel_patchset[1].off != 0xFFFFFFFF)
-							*(vu32 *)(ctxt.kernel + kernel_patchset[1].off) = kernel_patchset[1].val;
+
+						if (ctxt.uartdebug)
+						{
+							u32 uartIdx = (ctxt.uartdebug[0] == 'A') ? UART_A : UART_B;
+							clock_enable_uart(uartIdx);
+							uart_init(uartIdx, 115200);
+
+							const char* uart_welcome_msg = "Hekate initialized UART.\n";
+							uart_send(uartIdx, (char*)uart_welcome_msg, strlen(uart_welcome_msg));
+						}
+
+						for (size_t i=0; 1; i++)
+						{
+							if (kernel_patchset[i].off == 0xFFFFFFFF)
+								break;
+
+							if (kernel_patchset[i].bytes == NULL || kernel_patchset[i].len == 0)
+								continue;
+
+							if (i == 0 && !ctxt.svcperm)
+								continue;
+							else if (i == 1 && !ctxt.debugmode)
+								continue;
+							else if (!ctxt.uartdebug)
+								break;
+							else if (i == 2 && ctxt.uartdebug[0] == 'A') //no need to patch it to use B
+								continue;
+
+							memcpy((u8*)(ctxt.kernel) + kernel_patchset[i].off, kernel_patchset[i].bytes, kernel_patchset[i].len);
+						}
 					}
 				}
 			}
