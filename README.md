@@ -19,7 +19,6 @@ The ipl can be configured via 'hekate_ipl.ini' (if it is present on the SD card)
 | kip1={SD path}     | Replaces/Adds kernel initial process. Multiple can be set. |
 | fullsvcperm=1      | Disables SVC verification                                  |
 | debugmode=1        | Enables Debug mode                                         |
-| uartdebug=A        | Enables svcOutputDebugString output to UART A or B         |
 
 
 

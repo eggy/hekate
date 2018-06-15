@@ -27,17 +27,10 @@
 
 #define INI1_MAGIC 0x31494E49
 
-typedef struct _kpatch_t
-{
-	uintptr_t off;
-	const u8* bytes;
-	size_t len;
-} kpatch_t;
-
-#define KPATCHSET_DEF(name, ...) \
-	kpatch_t name[] = { \
+#define PATCHSET_DEF(name, ...) \
+	patch_t name[] = { \
 		__VA_ARGS__, \
-		{ 0xFFFFFFFF, NULL, 0 } \
+		{ 0xFFFFFFFF, 0xFFFFFFFF } \
 	}
 
 typedef struct _pkg2_hdr_t
@@ -98,7 +91,7 @@ typedef struct _pkg2_kip1_info_t
 typedef struct _pkg2_kernel_id_t
 {
 	u32 crc32c_id;
-	kpatch_t *kernel_patchset;
+	patch_t *kernel_patchset;
 } pkg2_kernel_id_t;
 
 void pkg2_parse_kips(link_t *info, pkg2_hdr_t *pkg2);
